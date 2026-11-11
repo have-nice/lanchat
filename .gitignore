@@ -1,0 +1,13 @@
+# Build output
+bin/
+obj/
+dist/
+*.user
+.vs/
+
+# Local build toolchain
+.tools/
+
+# Published binary (attach to Releases instead)
+LanChat.exe
+*.pdb
