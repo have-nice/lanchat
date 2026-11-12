@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
@@ -11,10 +12,19 @@ public sealed class MainForm : Form
     private readonly LanChatApp _app;
     private readonly WebView2 _webView;
     private readonly NotifyIcon _notifyIcon;
+    private readonly bool _startHidden;
+    private bool _reallyExit;
+    private bool _trayHintShown;
 
-    public MainForm(LanChatApp app)
+    private const int HotKeyId = 0x4C43;
+    private const int WmHotKey = 0x0312;
+    private const uint ModAlt = 0x0001;
+    private const uint ModControl = 0x0002;
+
+    public MainForm(LanChatApp app, bool startHidden = false)
     {
         _app = app;
+        _startHidden = startHidden;
 
         Text = "LAN Chat";
         Width = 1180;
@@ -29,8 +39,13 @@ public sealed class MainForm : Form
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("Open LAN Chat", null, (_, _) => RestoreWindow());
+        menu.Items.Add("Settings", null, (_, _) => OpenSettings());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => Close());
+        menu.Items.Add("Exit", null, (_, _) =>
+        {
+            _reallyExit = true;
+            Close();
+        });
 
         _notifyIcon = new NotifyIcon
         {
@@ -43,12 +58,18 @@ public sealed class MainForm : Form
         _notifyIcon.BalloonTipClicked += (_, _) => RestoreWindow();
 
         Load += OnLoadAsync;
-        FormClosing += (_, _) =>
+        FormClosing += OnFormClosing;
+        HandleCreated += (_, _) =>
         {
-            _notifyIcon.Visible = false;
-            _notifyIcon.Dispose();
+            ApplyTheme(_app.ConfigService.Config.Theme);
+            try
+            {
+                RegisterHotKey(Handle, HotKeyId, ModControl | ModAlt, (int)Keys.L);
+            }
+            catch
+            {
+            }
         };
-        HandleCreated += (_, _) => ApplyTheme(_app.ConfigService.Config.Theme);
     }
 
     private async void OnLoadAsync(object? sender, EventArgs e)
@@ -62,13 +83,65 @@ public sealed class MainForm : Form
             _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
             _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
             _webView.CoreWebView2.Navigate(_app.Url);
+
+            if (_startHidden && _app.ConfigService.Config.MinimizeToTray)
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    Hide();
+                    ShowInTaskbar = false;
+                }));
+            }
         }
         catch (Exception ex)
         {
             MessageBox.Show("Could not start the chat window.\n\n" + ex.Message,
                 "LAN Chat", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _reallyExit = true;
             Close();
         }
+    }
+
+    private void OnFormClosing(object? sender, FormClosingEventArgs e)
+    {
+        try
+        {
+            UnregisterHotKey(Handle, HotKeyId);
+        }
+        catch
+        {
+        }
+
+        if (!_reallyExit && e.CloseReason == CloseReason.UserClosing &&
+            _app.ConfigService.Config.MinimizeToTray)
+        {
+            e.Cancel = true;
+            Hide();
+            ShowInTaskbar = false;
+            if (!_trayHintShown)
+            {
+                _trayHintShown = true;
+                _notifyIcon.ShowBalloonTip(3000, "LAN Chat is still running",
+                    "Messages keep arriving in the background. Double-click the tray icon to reopen, or use Ctrl+Alt+L.",
+                    ToolTipIcon.Info);
+            }
+
+            return;
+        }
+
+        _notifyIcon.Visible = false;
+        _notifyIcon.Dispose();
+    }
+
+    protected override void WndProc(ref System.Windows.Forms.Message m)
+    {
+        if (m.Msg == WmHotKey && m.WParam.ToInt32() == HotKeyId)
+        {
+            RestoreWindow();
+            return;
+        }
+
+        base.WndProc(ref m);
     }
 
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -117,6 +190,22 @@ public sealed class MainForm : Form
 
                     break;
                 }
+                case "capture":
+                {
+                    var to = root.TryGetProperty("to", out var target) ? target.GetString() : "group";
+                    CaptureAndSend(string.IsNullOrWhiteSpace(to) ? "group" : to);
+                    break;
+                }
+                case "hide":
+                {
+                    if (_app.ConfigService.Config.MinimizeToTray)
+                    {
+                        Hide();
+                        ShowInTaskbar = false;
+                    }
+
+                    break;
+                }
             }
         }
         catch
@@ -124,8 +213,54 @@ public sealed class MainForm : Form
         }
     }
 
+    private void OpenSettings()
+    {
+        RestoreWindow();
+        try
+        {
+            _webView.CoreWebView2?.PostWebMessageAsJson("{\"type\":\"open-settings\"}");
+        }
+        catch
+        {
+        }
+    }
+
+    private async void CaptureAndSend(string to)
+    {
+        var shot = Path.Combine(Path.GetTempPath(), "lanchat-shot-" + Guid.NewGuid().ToString("N") + ".png");
+        try
+        {
+            var bounds = Screen.PrimaryScreen?.Bounds ?? Screen.GetBounds(Point.Empty);
+            using var bitmap = new Bitmap(bounds.Width, bounds.Height);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+            }
+
+            bitmap.Save(shot, ImageFormat.Png);
+            await _app.Chat.SendFileAsync(to, shot, "screenshot-" + DateTime.Now.ToString("HHmmss") + ".png",
+                "image/png", CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Could not capture the screen.\n\n" + ex.Message, "LAN Chat",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(shot)) File.Delete(shot);
+            }
+            catch
+            {
+            }
+        }
+    }
+
     private void RestoreWindow()
     {
+        ShowInTaskbar = true;
         Show();
         WindowState = FormWindowState.Normal;
         Activate();
@@ -202,4 +337,10 @@ public sealed class MainForm : Form
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    [DllImport("user32.dll")]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, int vk);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 }

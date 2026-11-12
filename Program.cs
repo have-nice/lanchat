@@ -5,7 +5,7 @@ namespace LanChat;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         using var mutex = new Mutex(true, "LanChat.SingleInstance.v1", out var createdNew);
         if (!createdNew)
@@ -16,6 +16,8 @@ internal static class Program
         }
 
         ApplicationConfiguration.Initialize();
+
+        var startHidden = args.Any(a => string.Equals(a, "--tray", StringComparison.OrdinalIgnoreCase));
 
         var app = new LanChatApp();
         try
@@ -29,7 +31,12 @@ internal static class Program
             return;
         }
 
-        using (var form = new MainForm(app))
+        if (app.ConfigService.Config.StartWithWindows != StartupService.IsEnabled())
+        {
+            StartupService.Set(app.ConfigService.Config.StartWithWindows);
+        }
+
+        using (var form = new MainForm(app, startHidden))
         {
             Application.Run(form);
         }

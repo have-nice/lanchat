@@ -8,7 +8,11 @@ public sealed class CryptoService
 {
     private readonly Func<string> _password;
     private readonly ConcurrentDictionary<string, byte[]> _keys = new();
+    private readonly ConcurrentDictionary<string, byte[]> _authKeys = new();
     private static readonly byte[] Salt = Encoding.UTF8.GetBytes("LanChat.LAN.v1");
+    private static readonly byte[] AuthSalt = Encoding.UTF8.GetBytes("LanChat.Auth.v1");
+    private const string KeyCheckLabel = "lanchat-key-check";
+    private const string WebSessionLabel = "lanchat-web-session";
 
     public CryptoService(Func<string> password) => _password = password;
 
@@ -21,12 +25,64 @@ public sealed class CryptoService
             Encoding.UTF8.GetBytes(p), Salt, 120_000, HashAlgorithmName.SHA256, 32));
     }
 
+    private byte[] AuthKey()
+    {
+        var pw = _password();
+        return _authKeys.GetOrAdd(pw, p => Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(p), AuthSalt, 120_000, HashAlgorithmName.SHA256, 32));
+    }
+
     private static byte[] MacKey(byte[] key)
     {
         var combined = new byte[key.Length + 3];
         Buffer.BlockCopy(key, 0, combined, 0, key.Length);
         Encoding.UTF8.GetBytes("mac").CopyTo(combined, key.Length);
         return SHA256.HashData(combined);
+    }
+
+    private byte[] Hmac(byte[] key, string payload) =>
+        HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(payload));
+
+    /// <summary>HMAC over an arbitrary string with the room password. Used to authenticate peers.</summary>
+    public string Sign(string payload) =>
+        Convert.ToBase64String(Hmac(AuthKey(), payload));
+
+    public bool Verify(string payload, string? signature)
+    {
+        if (!Enabled || string.IsNullOrEmpty(signature)) return false;
+        try
+        {
+            var expected = Hmac(AuthKey(), payload);
+            var given = Convert.FromBase64String(signature);
+            return expected.Length == given.Length &&
+                   CryptographicOperations.FixedTimeEquals(expected, given);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Short fingerprint of the room key, advertised during discovery.</summary>
+    public string KeyCheck()
+    {
+        if (!Enabled) return "open";
+        var mac = Hmac(AuthKey(), KeyCheckLabel);
+        return Convert.ToBase64String(mac.AsSpan(0, 12));
+    }
+
+    public string WebSessionToken() => Sign(WebSessionLabel);
+
+    public bool VerifyWebSession(string? token) => Verify(WebSessionLabel, token);
+
+    public bool PasswordMatches(string? candidate)
+    {
+        var pw = _password();
+        if (string.IsNullOrEmpty(pw)) return false;
+        if (candidate == null) return false;
+        var a = Encoding.UTF8.GetBytes(pw);
+        var b = Encoding.UTF8.GetBytes(candidate);
+        return a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
     }
 
     public (string Nonce, string Data) EncryptText(string plain)

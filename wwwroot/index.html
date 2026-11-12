@@ -23,16 +23,26 @@
         </button>
       </div>
 
+      <div class="sidebar-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg>
+        <input id="search-input" type="search" placeholder="Search messages" autocomplete="off" aria-label="Search messages">
+      </div>
+
       <div class="conv-scroll">
-        <div class="section-label">LAN Room</div>
+        <div class="section-label">Room</div>
         <div class="conv-list" id="room-list"></div>
         <div class="section-label" id="online-label">Online</div>
         <div class="conv-list" id="peer-list"></div>
         <div class="section-label" id="recent-label" hidden>Recent</div>
         <div class="conv-list" id="recent-list"></div>
+        <div class="section-label" id="search-label" hidden>Results</div>
+        <div class="conv-list" id="search-list"></div>
       </div>
 
       <div class="sidebar-footer">
+        <button id="add-peer-btn" class="icon-btn" title="Add a computer by IP" aria-label="Add a computer by IP">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
         <div class="net-state">
           <span class="status-dot" id="net-dot"></span>
           <span id="net-status">Starting…</span>
@@ -53,38 +63,70 @@
             <span class="lock-pill" id="lock-pill" hidden title="Messages are encrypted with the room password">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
             </span>
+            <span class="mute-pill" id="mute-pill" hidden title="Notifications are muted for this chat">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path d="m17 9 4 6M21 9l-4 6"/></svg>
+            </span>
           </div>
           <span id="chat-subtitle">Everyone on your network</span>
         </div>
         <div class="header-actions">
+          <button id="mute-btn" class="icon-btn" title="Mute notifications" aria-label="Mute notifications">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10.3 21a2 2 0 0 0 3.4 0"/></svg>
+          </button>
+          <button id="block-btn" class="icon-btn" title="Block this peer" aria-label="Block this peer" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="m6 6 12 12"/></svg>
+          </button>
           <button id="clear-btn" class="icon-btn" title="Clear conversation" aria-label="Clear conversation">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M10 11v6M14 11v6"/></svg>
           </button>
         </div>
       </header>
 
-      <div class="messages" id="messages">
+      <div class="messages" id="messages" aria-live="polite">
         <div class="empty-state" id="empty-state">
           <div class="empty-art" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H9.6L5.2 19.6A1 1 0 0 1 3.6 18.8V15"/><path d="M8 9h8M8 12h5"/></svg>
           </div>
           <h3>Your LAN room is ready</h3>
-          <p>Anyone running LAN Chat on this network will appear here automatically.</p>
+          <p>Anyone running LAN Chat in this room will appear here automatically.</p>
         </div>
       </div>
 
       <div class="drop-overlay" id="drop-overlay">
         <div class="drop-inner">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
-          <span>Drop files to send</span>
+          <span>Drop files or folders to send</span>
         </div>
+      </div>
+
+      <div class="reply-bar" id="reply-bar" hidden>
+        <div class="quote">
+          <span class="quote-name" id="reply-name"></span>
+          <span class="quote-text" id="reply-text"></span>
+        </div>
+        <button id="reply-cancel" class="icon-btn" title="Cancel reply" aria-label="Cancel reply">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="recording" id="recording" hidden>
+        <span class="rec-dot"></span>
+        <span>Recording</span>
+        <span id="rec-time">0:00</span>
+        <button id="rec-cancel" class="ghost-btn">Cancel</button>
       </div>
 
       <footer class="composer">
         <button id="attach-btn" class="icon-btn" title="Attach file" aria-label="Attach file">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5 12.5 20a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.85 1.85 0 0 1-2.6-2.6l7.9-7.9"/></svg>
         </button>
-        <textarea id="input" rows="1" placeholder="Message LAN Room" spellcheck="false"></textarea>
+        <button id="shot-btn" class="icon-btn" title="Send a screenshot of this screen" aria-label="Send a screenshot">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="6" width="18" height="13" rx="2.5"/><circle cx="12" cy="12.5" r="3.4"/><path d="M8 6l1.4-2h5.2L16 6"/></svg>
+        </button>
+        <button id="mic-btn" class="icon-btn" title="Record a voice message" aria-label="Record a voice message">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        </button>
+        <textarea id="input" rows="1" placeholder="Message LAN Room" spellcheck="false" aria-label="Message"></textarea>
         <button id="send-btn" class="send-btn" title="Send" aria-label="Send">
           <svg viewBox="0 0 24 24" fill="none"><path d="M4.2 11.2 20 4l-7.2 15.8-2.1-6.5-6.5-2.1Z" fill="currentColor"/></svg>
         </button>
@@ -93,40 +135,125 @@
     </main>
   </div>
 
-  <div class="modal-backdrop" id="settings-modal" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <h2 id="settings-title">Settings</h2>
-
-      <label class="field">
-        <span>Display name</span>
-        <input id="set-name" maxlength="40" autocomplete="off">
-      </label>
-
+  <div class="modal-backdrop" id="login-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
+      <h2 id="login-title">Join this room</h2>
+      <p class="hint">This browser needs the room password to open the conversation.</p>
       <label class="field">
         <span>Room password</span>
-        <input id="set-password" type="password" placeholder="Leave blank to keep the current password" autocomplete="new-password">
+        <input id="login-password" type="password" autocomplete="current-password">
       </label>
+      <p class="hint" id="login-error" hidden></p>
+      <div class="modal-actions">
+        <button id="login-btn" class="primary-btn">Join</button>
+      </div>
+    </div>
+  </div>
 
-      <label class="check" id="remove-pass-row" hidden>
-        <input type="checkbox" id="remove-pass">
-        <span>Remove password (turn off encryption)</span>
-      </label>
+  <div class="modal-backdrop" id="settings-modal" hidden>
+    <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="modal-head">
+        <h2 id="settings-title">Settings</h2>
+        <button id="settings-close" class="icon-btn" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
 
-      <p class="hint" id="enc-hint">Messages and files are encrypted in transit with this password. Everyone in the room must use the same one.</p>
+      <div class="modal-body">
+        <section class="settings-section">
+          <h3>Identity</h3>
+          <label class="field">
+            <span>Display name</span>
+            <input id="set-name" maxlength="40" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Room name (join code)</span>
+            <input id="set-room" maxlength="40" autocomplete="off">
+          </label>
+          <p class="hint">Only computers using the same room name can see each other.</p>
+        </section>
 
-      <label class="field">
-        <span>Theme</span>
-        <select id="set-theme">
-          <option value="dark">Dark</option>
-          <option value="light">Light</option>
-        </select>
-      </label>
+        <section class="settings-section">
+          <h3>Security</h3>
+          <label class="field">
+            <span>Room password</span>
+            <input id="set-password" type="password" placeholder="Leave blank to keep the current password" autocomplete="new-password">
+          </label>
+          <label class="check" id="remove-pass-row" hidden>
+            <input type="checkbox" id="remove-pass">
+            <span>Remove password (turn off encryption)</span>
+          </label>
+          <p class="hint" id="enc-hint">Messages and files are encrypted with this password, and peers must prove they know it.</p>
+        </section>
 
-      <div class="meta" id="settings-meta"></div>
+        <section class="settings-section">
+          <h3>Notifications</h3>
+          <label class="check"><input type="checkbox" id="set-notifications"><span>Desktop notifications</span></label>
+          <label class="check"><input type="checkbox" id="set-sounds"><span>Play a sound for new messages</span></label>
+          <label class="check"><input type="checkbox" id="set-tray"><span>Keep running in the tray when I close the window</span></label>
+          <label class="check"><input type="checkbox" id="set-startup"><span>Start with Windows</span></label>
+        </section>
+
+        <section class="settings-section">
+          <h3>Storage</h3>
+          <label class="field">
+            <span>Delete received files after (days, 0 = keep forever)</span>
+            <input id="set-retention" type="number" min="0" max="3650">
+          </label>
+          <div class="row">
+            <span class="meta" id="files-size"></span>
+            <button id="cleanup-btn" class="ghost-btn">Clean up now</button>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h3>Browser access</h3>
+          <label class="check"><input type="checkbox" id="set-lanweb"><span>Let phones and other browsers join over the LAN</span></label>
+          <p class="hint">Requires a room password. Anyone on this network who knows the password can open the room in a browser.</p>
+          <div class="qr-row" id="qr-row" hidden>
+            <img id="qr-img" alt="QR code for this room">
+            <div class="qr-text">
+              <code id="lan-url"></code>
+              <button id="copy-url" class="ghost-btn">Copy link</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h3>Updates</h3>
+          <label class="field">
+            <span>Update feed URL</span>
+            <input id="set-feed" placeholder="https://example.com/lanchat-update.json" autocomplete="off">
+          </label>
+          <div class="row">
+            <span class="meta" id="version-label"></span>
+            <button id="check-update" class="ghost-btn">Check for updates</button>
+            <button id="apply-update" class="primary-btn" hidden>Install and restart</button>
+          </div>
+          <p class="hint" id="update-status"></p>
+        </section>
+
+        <div class="meta" id="settings-meta"></div>
+      </div>
 
       <div class="modal-actions">
         <button id="settings-cancel" class="ghost-btn">Cancel</button>
         <button id="settings-save" class="primary-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="add-peer-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-peer-title">
+      <h2 id="add-peer-title">Add a computer</h2>
+      <p class="hint">Broadcast discovery is blocked on some networks. Enter an address to connect directly.</p>
+      <label class="field">
+        <span>Address</span>
+        <input id="add-peer-address" placeholder="192.168.1.20 or [fe80::1]:47821" autocomplete="off">
+      </label>
+      <div class="modal-actions">
+        <button id="add-peer-cancel" class="ghost-btn">Cancel</button>
+        <button id="add-peer-save" class="primary-btn">Connect</button>
       </div>
     </div>
   </div>

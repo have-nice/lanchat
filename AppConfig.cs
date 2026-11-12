@@ -12,12 +12,52 @@ public sealed class AppConfig
     public int UdpPort { get; set; } = 47822;
     public string Password { get; set; } = "";
     public string Theme { get; set; } = "dark";
+
+    /// <summary>Named room / join code. Peers in a different room are ignored.</summary>
+    public string Room { get; set; } = "Default";
+
+    public bool MinimizeToTray { get; set; } = true;
+    public bool StartWithWindows { get; set; }
+    public bool Notifications { get; set; } = true;
+    public bool Sounds { get; set; } = true;
+
+    /// <summary>Days to keep received files; 0 keeps them forever.</summary>
+    public int FileRetentionDays { get; set; } = 7;
+
+    /// <summary>Serve the UI to other devices on the LAN (requires a room password).</summary>
+    public bool AllowLanWeb { get; set; }
+
+    public List<string> Blocked { get; set; } = new();
+    public List<string> Muted { get; set; } = new();
+
+    /// <summary>Optional JSON update manifest URL (see UpdateService).</summary>
+    public string UpdateFeed { get; set; } = "";
 }
 
 public static class AppPaths
 {
-    public static string DataDir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LanChat");
+    private static readonly bool Portable = ComputePortable();
+    private static readonly string? OverrideDir = Environment.GetEnvironmentVariable("LANCHAT_DATA_DIR");
+
+    private static bool ComputePortable()
+    {
+        try
+        {
+            return File.Exists(Path.Combine(AppContext.BaseDirectory, "portable.txt"));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool IsPortable => Portable;
+
+    public static string DataDir => !string.IsNullOrWhiteSpace(OverrideDir)
+        ? OverrideDir!
+        : Portable
+            ? Path.Combine(AppContext.BaseDirectory, "LanChatData")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LanChat");
 
     public static string ConfigFile => Path.Combine(DataDir, "config.json");
     public static string HistoryFile => Path.Combine(DataDir, "history.json");
@@ -57,6 +97,13 @@ public sealed class ConfigService
                     if (cfg.HttpPort <= 0) cfg.HttpPort = 47821;
                     if (cfg.UdpPort <= 0) cfg.UdpPort = 47822;
                     if (cfg.Theme != "light") cfg.Theme = "dark";
+                    if (string.IsNullOrWhiteSpace(cfg.Room)) cfg.Room = "Default";
+                    cfg.Room = cfg.Room.Trim();
+                    if (cfg.FileRetentionDays < 0) cfg.FileRetentionDays = 0;
+                    if (cfg.FileRetentionDays > 3650) cfg.FileRetentionDays = 3650;
+                    cfg.Blocked ??= new List<string>();
+                    cfg.Muted ??= new List<string>();
+                    cfg.UpdateFeed ??= "";
                     cfg.Password = UnprotectPassword(cfg.Password);
                     return cfg;
                 }
@@ -83,7 +130,17 @@ public sealed class ConfigService
                 HttpPort = cfg.HttpPort,
                 UdpPort = cfg.UdpPort,
                 Theme = cfg.Theme,
-                Password = ProtectPassword(cfg.Password)
+                Password = ProtectPassword(cfg.Password),
+                Room = cfg.Room,
+                MinimizeToTray = cfg.MinimizeToTray,
+                StartWithWindows = cfg.StartWithWindows,
+                Notifications = cfg.Notifications,
+                Sounds = cfg.Sounds,
+                FileRetentionDays = cfg.FileRetentionDays,
+                AllowLanWeb = cfg.AllowLanWeb,
+                Blocked = new List<string>(cfg.Blocked ?? new List<string>()),
+                Muted = new List<string>(cfg.Muted ?? new List<string>()),
+                UpdateFeed = cfg.UpdateFeed ?? ""
             };
             var tmp = AppPaths.ConfigFile + ".tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(onDisk,
@@ -164,5 +221,33 @@ public static class PortUtil
         var p = ((System.Net.IPEndPoint)fallback.LocalEndpoint).Port;
         fallback.Stop();
         return p;
+    }
+}
+
+public static class NetUtil
+{
+    /// <summary>Best-effort first non-loopback IPv4 address of this computer.</summary>
+    public static string? LocalIPv4()
+    {
+        try
+        {
+            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                if (nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+                foreach (var unicast in nic.GetIPProperties().UnicastAddresses)
+                {
+                    if (unicast.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                    var text = unicast.Address.ToString();
+                    if (text.StartsWith("169.254.", StringComparison.Ordinal)) continue;
+                    return text;
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 }
