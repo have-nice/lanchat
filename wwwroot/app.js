@@ -36,7 +36,6 @@
     input: $("#input"),
     sendBtn: $("#send-btn"),
     attachBtn: $("#attach-btn"),
-    shotBtn: $("#shot-btn"),
     micBtn: $("#mic-btn"),
     fileInput: $("#file-input"),
     themeBtn: $("#theme-btn"),
@@ -44,6 +43,17 @@
     muteBtn: $("#mute-btn"),
     blockBtn: $("#block-btn"),
     addPeerBtn: $("#add-peer-btn"),
+    groupList: $("#group-list"),
+    newGroupBtn: $("#new-group-btn"),
+    groupEditBtn: $("#group-edit-btn"),
+    groupModal: $("#group-modal"),
+    groupTitle: $("#group-title"),
+    groupName: $("#group-name"),
+    groupMembers: $("#group-members"),
+    groupSave: $("#group-save"),
+    groupCancel: $("#group-cancel"),
+    groupClose: $("#group-close"),
+    groupDelete: $("#group-delete"),
     settingsBtn: $("#settings-btn"),
     settingsModal: $("#settings-modal"),
     settingsClose: $("#settings-close"),
@@ -105,6 +115,8 @@
     seen: new Set(),
     muted: new Set(),
     blocked: new Set(),
+    groups: [],
+    editingGroupId: null,
     typing: new Map(),
     sse: null,
     atBottom: true,
@@ -236,6 +248,7 @@
     state.selfName = config.name || state.selfName;
     state.muted = new Set(config.muted || []);
     state.blocked = new Set(config.blocked || []);
+    state.groups = config.groups || [];
     applyTheme(config.theme);
     renderSelf();
     renderSidebar();
@@ -305,8 +318,15 @@
     updateHeader();
   };
 
+  const groupFor = (key) => {
+    if (!key || !String(key).startsWith("g:")) return null;
+    return state.groups.find((group) => group.id === key.slice(2)) || null;
+  };
+
   const conversationName = (key) => {
     if (key === "group") return state.config.room || "LAN Room";
+    const group = groupFor(key);
+    if (group) return group.name;
     const conv = state.conversations.get(key);
     if (conv && conv.name) return conv.name;
     const peer = state.peers.find((p) => p.id === key);
@@ -354,6 +374,19 @@
       `<span class="status-dot online"></span>${onlineText}`
     );
 
+    els.groupList.innerHTML = state.groups.length
+      ? state.groups
+          .map((group) => {
+            const count = (group.members || []).length;
+            return convItem(
+              "g:" + group.id,
+              group.name,
+              `<span class="status-dot online"></span>${count} member${count === 1 ? "" : "s"}`
+            );
+          })
+          .join("")
+      : '<div class="section-empty">No groups yet</div>';
+
     els.onlineLabel.textContent = `Online${state.peers.length ? " — " + state.peers.length : ""}`;
     els.peerList.innerHTML = state.peers.length
       ? state.peers
@@ -365,7 +398,11 @@
 
     const onlineIds = new Set(state.peers.map((p) => p.id));
     const recents = [...state.conversations.values()].filter(
-      (c) => c.id !== "group" && !onlineIds.has(c.id) && c.messages.length > 0
+      (c) =>
+        c.id !== "group" &&
+        !c.id.startsWith("g:") &&
+        !onlineIds.has(c.id) &&
+        c.messages.length > 0
     );
     recents.sort((a, b) => (b.messages.at(-1)?.ts || 0) - (a.messages.at(-1)?.ts || 0));
     els.recentLabel.hidden = recents.length === 0;
@@ -573,7 +610,9 @@
     els.lockPill.hidden = !state.config.passwordSet;
     els.mutePill.hidden = !state.muted.has(state.active);
     els.muteBtn.classList.toggle("active", state.muted.has(state.active));
-    els.blockBtn.hidden = state.active === "group" || !IS_LOCAL;
+    const group = groupFor(state.active);
+    els.blockBtn.hidden = state.active === "group" || Boolean(group) || !IS_LOCAL;
+    els.groupEditBtn.hidden = !group;
 
     if (state.active === "group") {
       els.chatAvatar.className = "avatar room";
@@ -583,6 +622,12 @@
         : state.peers.length === 0
           ? "Only you online — waiting for others"
           : `${state.peers.length} online in ${state.config.room || "this room"}`;
+    } else if (group) {
+      const count = (group.members || []).length;
+      els.chatAvatar.className = "avatar";
+      els.chatAvatar.style.setProperty("--hue", hueFor(state.active));
+      els.chatAvatar.textContent = initials(name);
+      els.chatSubtitle.textContent = typingName ? "typing…" : `${count} members`;
     } else {
       els.chatAvatar.className = "avatar";
       els.chatAvatar.style.setProperty("--hue", hueFor(state.active));
@@ -662,6 +707,15 @@
         }
         break;
       }
+      case "groups":
+        state.groups = event.groups || [];
+        if (state.active.startsWith("g:") && !state.groups.some((g) => "g:" + g.id === state.active)) {
+          state.active = "group";
+        }
+        renderSidebar();
+        renderMessages();
+        updateHeader();
+        break;
       case "peers":
         state.peers = event.peers || [];
         renderSidebar();
@@ -1128,6 +1182,110 @@
     }
   };
 
+  const renderGroupMembers = (selected) => {
+    const chosen = new Set((selected || []).filter((id) => id !== state.selfId));
+    const rows = [];
+    const seen = new Set();
+
+    state.peers.forEach((peer) => {
+      rows.push({ id: peer.id, name: peer.name, online: true });
+      seen.add(peer.id);
+    });
+
+    chosen.forEach((id) => {
+      if (seen.has(id)) return;
+      const name = conversationName(id);
+      rows.push({ id, name: name === "Unknown" ? "Offline member" : name, online: false });
+    });
+
+    els.groupMembers.innerHTML = rows.length
+      ? rows
+          .map(
+            (row) => `
+        <label class="member-row">
+          <input type="checkbox" value="${esc(row.id)}" ${chosen.has(row.id) ? "checked" : ""}>
+          <span class="member-name">${esc(row.name)}</span>
+          <span class="status-dot ${row.online ? "online" : "offline"}"></span>
+        </label>`
+          )
+          .join("")
+      : '<div class="section-empty">No one else is online right now.</div>';
+  };
+
+  const openGroupModal = (groupId = null) => {
+    const group = groupId ? state.groups.find((g) => g.id === groupId) : null;
+    state.editingGroupId = group ? group.id : null;
+    els.groupTitle.textContent = group ? "Edit group" : "New group";
+    els.groupSave.textContent = group ? "Save" : "Create";
+    els.groupDelete.hidden = !group;
+    els.groupName.value = group ? group.name : "";
+    renderGroupMembers(group ? group.members : []);
+    els.groupModal.hidden = false;
+    setTimeout(() => els.groupName.focus(), 40);
+  };
+
+  const closeGroupModal = () => {
+    els.groupModal.hidden = true;
+    state.editingGroupId = null;
+  };
+
+  const saveGroup = async () => {
+    const name = els.groupName.value.trim();
+    const members = [...els.groupMembers.querySelectorAll("input[type=checkbox]:checked")].map((box) => box.value);
+    if (!name) {
+      toast("Give the group a name.", "error");
+      return;
+    }
+
+    if (members.length === 0) {
+      toast("Pick at least one person for the group.", "error");
+      return;
+    }
+
+    const editing = state.editingGroupId;
+    const url = editing ? `/api/groups/${encodeURIComponent(editing)}` : "/api/groups";
+    try {
+      const response = await apiFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, members })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        toast(data.error || "Could not save the group.", "error");
+        return;
+      }
+      els.groupModal.hidden = true;
+      state.editingGroupId = null;
+      await refreshState();
+      if (data.key) selectConversation(data.key);
+      else if (editing) selectConversation("g:" + editing);
+      toast(editing ? "Group updated." : "Group created.");
+    } catch {
+      toast("Could not save the group.", "error");
+    }
+  };
+
+  const deleteGroup = async () => {
+    const id = state.editingGroupId;
+    if (!id) return;
+    if (!confirm("Delete this group? Its history on this computer will be removed.")) return;
+    try {
+      const response = await apiFetch(`/api/groups/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!response.ok) {
+        toast("Could not delete the group.", "error");
+        return;
+      }
+      els.groupModal.hidden = true;
+      state.editingGroupId = null;
+      selectConversation("group");
+      await refreshState();
+      toast("Group deleted.");
+    } catch {
+      toast("Could not delete the group.", "error");
+    }
+  };
+
   const runSearch = async () => {
     const query = els.searchInput.value.trim();
     state.searchQuery = query;
@@ -1273,12 +1431,6 @@
       sendFiles(files);
     });
 
-    els.shotBtn.hidden = !IS_LOCAL;
-    els.shotBtn.addEventListener("click", () => {
-      postToHost({ type: "capture", to: state.active });
-      toast("Capturing this screen…");
-    });
-
     els.micBtn.addEventListener("click", () => {
       if (state.recorder) stopRecording(false);
       else startRecording();
@@ -1296,6 +1448,19 @@
     els.addPeerSave.addEventListener("click", submitAddPeer);
     els.addPeerAddress.addEventListener("keydown", (event) => {
       if (event.key === "Enter") submitAddPeer();
+    });
+
+    els.newGroupBtn.addEventListener("click", () => openGroupModal());
+    els.groupEditBtn.addEventListener("click", () => openGroupModal(state.active.slice(2)));
+    els.groupCancel.addEventListener("click", closeGroupModal);
+    els.groupClose.addEventListener("click", closeGroupModal);
+    els.groupSave.addEventListener("click", saveGroup);
+    els.groupDelete.addEventListener("click", deleteGroup);
+    els.groupModal.addEventListener("click", (event) => {
+      if (event.target === els.groupModal) closeGroupModal();
+    });
+    els.groupName.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") saveGroup();
     });
 
     els.settingsBtn.addEventListener("click", openSettings);
@@ -1395,6 +1560,8 @@
           els.lightboxImg.src = "";
         } else if (!els.settingsModal.hidden) {
           closeSettings();
+        } else if (!els.groupModal.hidden) {
+          closeGroupModal();
         } else if (!els.addPeerModal.hidden) {
           els.addPeerModal.hidden = true;
         } else if (!els.replyBar.hidden) {

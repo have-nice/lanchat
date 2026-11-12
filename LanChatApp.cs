@@ -60,6 +60,12 @@ public sealed class TypingPayloadIn
     public string? FromName { get; set; }
 }
 
+public sealed class GroupRequest
+{
+    public string? Name { get; set; }
+    public List<string>? Members { get; set; }
+}
+
 public sealed class LanChatApp
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -430,6 +436,40 @@ public sealed class LanChatApp
             return Results.Ok(new { blocked = !blocked });
         });
 
+        app.MapPost("/api/groups", async (HttpContext ctx) =>
+        {
+            var request = await ctx.Request.ReadFromJsonAsync<GroupRequest>(JsonOptions);
+            try
+            {
+                var group = _chat.CreateGroup(request?.Name ?? "", request?.Members);
+                return Results.Ok(new { ok = true, group, key = ChatService.GroupKey(group.Id) });
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
+
+        app.MapPost("/api/groups/{id}", async (string id, HttpContext ctx) =>
+        {
+            var request = await ctx.Request.ReadFromJsonAsync<GroupRequest>(JsonOptions);
+            try
+            {
+                var group = _chat.UpdateGroup(id, request?.Name, request?.Members);
+                return Results.Ok(new { ok = true, group, key = ChatService.GroupKey(group.Id) });
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
+
+        app.MapDelete("/api/groups/{id}", (string id) =>
+        {
+            _chat.DeleteGroup(id);
+            return Results.Ok();
+        });
+
         app.MapPost("/api/mute/{key}", (string key) =>
         {
             var muted = false;
@@ -594,6 +634,14 @@ public sealed class LanChatApp
         {
             var request = await ctx.Request.ReadFromJsonAsync<AckRequest>(JsonOptions);
             _chat.ApplyAck(request?.Ids, request?.State);
+            return Results.Ok();
+        });
+
+        app.MapPost("/api/peer/group", async (HttpContext ctx) =>
+        {
+            var payload = await ctx.Request.ReadFromJsonAsync<GroupPayload>(JsonOptions);
+            var peerId = ctx.Items["peerId"] as string ?? "";
+            _chat.UpsertGroupFromPeer(peerId, payload);
             return Results.Ok();
         });
 

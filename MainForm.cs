@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
@@ -190,12 +189,6 @@ public sealed class MainForm : Form
 
                     break;
                 }
-                case "capture":
-                {
-                    var to = root.TryGetProperty("to", out var target) ? target.GetString() : "group";
-                    CaptureAndSend(string.IsNullOrWhiteSpace(to) ? "group" : to);
-                    break;
-                }
                 case "hide":
                 {
                     if (_app.ConfigService.Config.MinimizeToTray)
@@ -222,39 +215,6 @@ public sealed class MainForm : Form
         }
         catch
         {
-        }
-    }
-
-    private async void CaptureAndSend(string to)
-    {
-        var shot = Path.Combine(Path.GetTempPath(), "lanchat-shot-" + Guid.NewGuid().ToString("N") + ".png");
-        try
-        {
-            var bounds = Screen.PrimaryScreen?.Bounds ?? Screen.GetBounds(Point.Empty);
-            using var bitmap = new Bitmap(bounds.Width, bounds.Height);
-            using (var graphics = Graphics.FromImage(bitmap))
-            {
-                graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
-            }
-
-            bitmap.Save(shot, ImageFormat.Png);
-            await _app.Chat.SendFileAsync(to, shot, "screenshot-" + DateTime.Now.ToString("HHmmss") + ".png",
-                "image/png", CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show("Could not capture the screen.\n\n" + ex.Message, "LAN Chat",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        finally
-        {
-            try
-            {
-                if (File.Exists(shot)) File.Delete(shot);
-            }
-            catch
-            {
-            }
         }
     }
 

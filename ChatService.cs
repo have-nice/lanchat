@@ -67,6 +67,15 @@ public sealed class SyncResponse
     public List<Message> Messages { get; set; } = new();
 }
 
+/// <summary>Group definition exchanged between peers.</summary>
+public sealed class GroupPayload
+{
+    public string Id { get; set; } = "";
+    public string? Name { get; set; }
+    public List<string>? Members { get; set; }
+    public bool Deleted { get; set; }
+}
+
 public sealed class SearchHit
 {
     public string Key { get; set; } = "";
@@ -178,6 +187,7 @@ public sealed class ChatService
             lanUrl = ip == null ? null : $"http://{ip}:{cfg.HttpPort}/",
             muted = cfg.Muted ?? new List<string>(),
             blocked = cfg.Blocked ?? new List<string>(),
+            groups = GetGroups(),
             filesSize = FilesSize(),
             version = UpdateService.CurrentVersion,
             updateFeed = cfg.UpdateFeed,
@@ -216,6 +226,10 @@ public sealed class ChatService
     private string ConversationName(string key, List<Message> messages)
     {
         if (key == "group") return RoomName;
+        if (key.StartsWith("g:", StringComparison.Ordinal))
+        {
+            return FindGroup(key.Substring(2))?.Name ?? "Group";
+        }
         foreach (var m in messages)
         {
             if (m.FromId == key && !string.IsNullOrWhiteSpace(m.FromName)) return m.FromName;
@@ -233,14 +247,235 @@ public sealed class ChatService
         _hub.Publish(new { type = "config", config = PublicConfig() });
     }
 
+    public static string GroupKey(string groupId) => "g:" + groupId;
+
+    public IReadOnlyList<GroupInfo> GetGroups()
+    {
+        var groups = _config.Config.Groups;
+        return groups == null ? new List<GroupInfo>() : groups.ToList();
+    }
+
+    private GroupInfo? FindGroup(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return null;
+        return _config.Config.Groups?.FirstOrDefault(g => g.Id == id);
+    }
+
+    public GroupInfo CreateGroup(string name, IEnumerable<string>? memberIds)
+    {
+        name = (name ?? "").Trim();
+        if (name.Length == 0) throw new ArgumentException("Give the group a name.");
+        if (name.Length > 60) name = name.Substring(0, 60);
+
+        var members = new HashSet<string> { SelfId };
+        foreach (var id in memberIds ?? Enumerable.Empty<string>())
+        {
+            if (!string.IsNullOrEmpty(id) && id != SelfId) members.Add(id);
+        }
+
+        if (members.Count < 2) throw new ArgumentException("Pick at least one person for the group.");
+
+        var group = new GroupInfo
+        {
+            Id = NewId(),
+            Name = name,
+            Members = members.ToList(),
+            CreatedBy = SelfId,
+            CreatedAt = Now()
+        };
+
+        _config.Update(cfg =>
+        {
+            cfg.Groups ??= new List<GroupInfo>();
+            cfg.Groups.Add(group);
+        });
+
+        PublishGroups();
+        _ = InviteGroupAsync(group);
+        return group;
+    }
+
+    public GroupInfo UpdateGroup(string id, string? name, IEnumerable<string>? memberIds)
+    {
+        var group = FindGroup(id) ?? throw new ArgumentException("That group no longer exists.");
+        var members = new HashSet<string> { SelfId };
+        if (memberIds != null)
+        {
+            foreach (var member in memberIds)
+            {
+                if (!string.IsNullOrEmpty(member) && member != SelfId) members.Add(member);
+            }
+        }
+        else
+        {
+            foreach (var member in group.Members)
+            {
+                if (!string.IsNullOrEmpty(member) && member != SelfId) members.Add(member);
+            }
+        }
+
+        if (members.Count < 2) throw new ArgumentException("Pick at least one person for the group.");
+
+        _config.Update(cfg =>
+        {
+            var target = cfg.Groups?.FirstOrDefault(g => g.Id == id);
+            if (target == null) return;
+            if (!string.IsNullOrWhiteSpace(name)) target.Name = name!.Trim();
+            target.Members = members.ToList();
+        });
+
+        var updated = FindGroup(id)!;
+        PublishGroups();
+        _ = InviteGroupAsync(updated);
+        return updated;
+    }
+
+    public void DeleteGroup(string id)
+    {
+        var group = FindGroup(id);
+        if (group == null) return;
+
+        _config.Update(cfg => cfg.Groups?.RemoveAll(g => g.Id == id));
+        PublishGroups();
+        ClearHistory(GroupKey(id));
+
+        var payload = new GroupPayload { Id = id, Deleted = true };
+        foreach (var peer in TargetsFor(GroupKey(id)))
+        {
+            _ = SendGroupPayloadAsync(peer, payload);
+        }
+    }
+
+    public void UpsertGroupFromPeer(string senderId, GroupPayload? payload)
+    {
+        if (payload == null || string.IsNullOrEmpty(payload.Id)) return;
+        if (string.IsNullOrEmpty(senderId)) return;
+
+        if (payload.Deleted)
+        {
+            var existing = FindGroup(payload.Id);
+            if (existing == null || !existing.Members.Contains(senderId)) return;
+            _config.Update(cfg => cfg.Groups?.RemoveAll(g => g.Id == payload.Id));
+            PublishGroups();
+            return;
+        }
+
+        var members = (payload.Members ?? new List<string>())
+            .Where(m => !string.IsNullOrEmpty(m))
+            .Distinct()
+            .ToList();
+        if (!members.Contains(senderId)) return;
+        if (!members.Contains(SelfId)) members.Add(SelfId);
+
+        _config.Update(cfg =>
+        {
+            cfg.Groups ??= new List<GroupInfo>();
+            var existing = cfg.Groups.FirstOrDefault(g => g.Id == payload.Id);
+            if (existing == null)
+            {
+                cfg.Groups.Add(new GroupInfo
+                {
+                    Id = payload.Id,
+                    Name = string.IsNullOrWhiteSpace(payload.Name) ? "Group" : payload.Name!.Trim(),
+                    Members = members,
+                    CreatedBy = senderId,
+                    CreatedAt = Now()
+                });
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(payload.Name)) existing.Name = payload.Name!.Trim();
+                existing.Members = members;
+            }
+        });
+
+        PublishGroups();
+    }
+
+    private void PublishGroups() => _hub.Publish(new { type = "groups", groups = GetGroups() });
+
+    private async Task InviteGroupAsync(GroupInfo group)
+    {
+        var payload = new GroupPayload
+        {
+            Id = group.Id,
+            Name = group.Name,
+            Members = group.Members
+        };
+
+        foreach (var peer in TargetsFor(GroupKey(group.Id)))
+        {
+            await SendGroupPayloadAsync(peer, payload);
+        }
+    }
+
+    private async Task SendGroupPayloadAsync(PeerInfo peer, GroupPayload payload)
+    {
+        try
+        {
+            const string pathAndQuery = "/api/peer/group";
+            var body = JsonSerializer.Serialize(payload, JsonOptions);
+            using var content = new StringContent(body, Encoding.UTF8, "application/json");
+            using var request = new HttpRequestMessage(HttpMethod.Post, BaseUrl(peer) + pathAndQuery);
+            request.Content = content;
+            PeerAuth.Apply(request, _crypto, SelfId, pathAndQuery);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var response = await Http.SendAsync(request, cts.Token);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string NormalizeTarget(string to) => string.IsNullOrWhiteSpace(to) ? "group" : to.Trim();
+
+    private static string KeyFor(string to, string fromId) =>
+        to == "group" ? "group" : to.StartsWith("g:", StringComparison.Ordinal) ? to : fromId;
+
+    private string TargetName(string key)
+    {
+        if (key == "group") return RoomName;
+        if (key.StartsWith("g:", StringComparison.Ordinal)) return FindGroup(key.Substring(2))?.Name ?? "Group";
+        return _peers.NameOf(key);
+    }
+
+    private bool IsForMe(string to, string fromId)
+    {
+        if (string.IsNullOrEmpty(to)) return false;
+        if (to == "group" || to == SelfId) return true;
+        if (!to.StartsWith("g:", StringComparison.Ordinal)) return false;
+        var group = FindGroup(to.Substring(2));
+        return group != null && group.Members.Contains(fromId) && group.Members.Contains(SelfId);
+    }
+
+    private List<PeerInfo> TargetsFor(string key)
+    {
+        if (key == "group") return AllPeers();
+        if (key.StartsWith("g:", StringComparison.Ordinal))
+        {
+            var group = FindGroup(key.Substring(2));
+            if (group == null) return new List<PeerInfo>();
+            var result = new List<PeerInfo>();
+            foreach (var id in group.Members)
+            {
+                if (id == SelfId) continue;
+                if (_peers.TryGetPeer(id, out var peer)) result.Add(peer);
+            }
+
+            return result;
+        }
+
+        return _peers.TryGetPeer(key, out var one) ? new List<PeerInfo> { one } : new List<PeerInfo>();
+    }
+
     public Message SendText(string to, string text, string? replyToId)
     {
         text = (text ?? "").Trim();
         if (text.Length == 0) throw new ArgumentException("Message is empty.");
         if (text.Length > 200_000) throw new ArgumentException("Message is too long.");
 
-        var key = to == "group" ? "group" : to;
-        var peerName = to == "group" ? RoomName : _peers.NameOf(to);
+        var key = NormalizeTarget(to);
+        var peerName = TargetName(key);
         var reply = string.IsNullOrEmpty(replyToId) ? null : FindById(replyToId);
 
         var message = new Message
@@ -278,21 +513,22 @@ public sealed class ChatService
             ReplyToText = message.ReplyToText
         };
 
-        if (to == "group")
+        var targets = TargetsFor(key);
+        if (key == "group" || key.StartsWith("g:", StringComparison.Ordinal))
         {
-            foreach (var peer in AllPeers())
+            foreach (var target in targets)
             {
-                _ = DeliverAsync(peer, payload, message);
+                _ = DeliverAsync(target, payload, message);
             }
         }
-        else if (_peers.TryGetPeer(to, out var peer))
+        else if (targets.Count > 0)
         {
-            _ = DeliverAsync(peer, payload, message);
+            _ = DeliverAsync(targets[0], payload, message);
         }
         else
         {
-            Enqueue(new PeerInfo { Id = to, Name = peerName, Ip = "", Port = 0 }, payload, message);
-            PublishError("offline-" + to, $"{peerName} is offline. Your message will be sent when they return.");
+            Enqueue(new PeerInfo { Id = key, Name = peerName, Ip = "", Port = 0 }, payload, message);
+            PublishError("offline-" + key, $"{peerName} is offline. Your message will be sent when they return.");
         }
 
         return message;
@@ -311,8 +547,8 @@ public sealed class ChatService
         var size = new FileInfo(storedPath).Length;
 
         var kind = KindFor(mime);
-        var key = to == "group" ? "group" : to;
-        var peerName = to == "group" ? RoomName : _peers.NameOf(to);
+        var key = NormalizeTarget(to);
+        var peerName = TargetName(key);
         var message = new Message
         {
             Id = msgId,
@@ -331,9 +567,7 @@ public sealed class ChatService
 
         AddMessage(key, message);
 
-        var targets = to == "group"
-            ? AllPeers()
-            : _peers.TryGetPeer(to, out var one) ? new List<PeerInfo> { one } : new List<PeerInfo>();
+        var targets = TargetsFor(key);
 
         string? encryptedTemp = null;
         try
@@ -611,18 +845,18 @@ public sealed class ChatService
                 return (false, "Sender does not match the authenticated peer.");
             }
 
-            if (payload.To != "group" && payload.To != SelfId) return (true, null);
+            if (!IsForMe(payload.To, payload.FromId)) return (true, null);
             if ((payload.Text?.Length ?? 0) > 200_000) return (false, "Message is too long.");
             if (payload.FromId == SelfId) return (true, null);
 
-            var key = payload.To == "group" ? "group" : payload.FromId;
+            var key = KeyFor(payload.To, payload.FromId);
             var message = new Message
             {
                 Id = string.IsNullOrEmpty(payload.MsgId) ? NewId() : payload.MsgId,
                 FromId = payload.FromId,
                 FromName = string.IsNullOrWhiteSpace(payload.FromName) ? "Unknown" : payload.FromName,
                 ToId = payload.To,
-                ToName = payload.To == "group" ? RoomName : SelfName,
+                ToName = key == "group" ? RoomName : key.StartsWith("g:", StringComparison.Ordinal) ? TargetName(key) : SelfName,
                 Kind = "text",
                 Text = payload.Text ?? "",
                 Ts = payload.Ts > 0 ? payload.Ts : Now(),
@@ -657,7 +891,7 @@ public sealed class ChatService
         var safeId = SafeId(msgId);
         if (safeId.Length == 0) return (false, "Bad file id.");
         if (total > MaxFileBytes) return (false, "That file is larger than the 4 GB limit.");
-        if (to != "group" && to != SelfId) return (true, null);
+        if (!IsForMe(to, fromId)) return (true, null);
 
         var ext = SafeExtension(name);
         var partPath = Path.Combine(AppPaths.FilesDir, safeId + ext + ".part");
@@ -725,14 +959,14 @@ public sealed class ChatService
 
             var size = new FileInfo(finalSource).Length;
             mime = GuessMime(name, mime);
-            var key = to == "group" ? "group" : fromId;
+            var key = KeyFor(to, fromId);
             var message = new Message
             {
                 Id = safeId,
                 FromId = fromId,
                 FromName = string.IsNullOrWhiteSpace(fromName) ? "Unknown" : fromName,
                 ToId = to,
-                ToName = to == "group" ? RoomName : SelfName,
+                ToName = key == "group" ? RoomName : key.StartsWith("g:", StringComparison.Ordinal) ? TargetName(key) : SelfName,
                 Kind = KindFor(mime),
                 FileId = safeId,
                 FileName = Path.GetFileName(name),
@@ -919,6 +1153,18 @@ public sealed class ChatService
         }
 
         _ = RequestSyncAsync(peer);
+
+        // Make sure a peer that was offline when a group was created learns about it.
+        foreach (var group in GetGroups())
+        {
+            if (!group.Members.Contains(peer.Id)) continue;
+            _ = SendGroupPayloadAsync(peer, new GroupPayload
+            {
+                Id = group.Id,
+                Name = group.Name,
+                Members = group.Members
+            });
+        }
     }
 
     public async Task RequestSyncAsync(PeerInfo peer)

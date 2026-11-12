@@ -4,6 +4,19 @@ using System.Text.Json;
 
 namespace LanChat;
 
+/// <summary>A private group: the creator plus the peers they picked.</summary>
+public sealed class GroupInfo
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+
+    /// <summary>Every member, including this computer and the creator.</summary>
+    public List<string> Members { get; set; } = new();
+
+    public string CreatedBy { get; set; } = "";
+    public long CreatedAt { get; set; }
+}
+
 public sealed class AppConfig
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -29,6 +42,7 @@ public sealed class AppConfig
 
     public List<string> Blocked { get; set; } = new();
     public List<string> Muted { get; set; } = new();
+    public List<GroupInfo> Groups { get; set; } = new();
 
     /// <summary>Optional JSON update manifest URL (see UpdateService).</summary>
     public string UpdateFeed { get; set; } = "";
@@ -103,6 +117,14 @@ public sealed class ConfigService
                     if (cfg.FileRetentionDays > 3650) cfg.FileRetentionDays = 3650;
                     cfg.Blocked ??= new List<string>();
                     cfg.Muted ??= new List<string>();
+                    cfg.Groups ??= new List<GroupInfo>();
+                    cfg.Groups.RemoveAll(g => g == null || string.IsNullOrEmpty(g.Id));
+                    foreach (var group in cfg.Groups)
+                    {
+                        group.Members ??= new List<string>();
+                        group.Members.RemoveAll(string.IsNullOrEmpty);
+                        if (string.IsNullOrWhiteSpace(group.Name)) group.Name = "Group";
+                    }
                     cfg.UpdateFeed ??= "";
                     cfg.Password = UnprotectPassword(cfg.Password);
                     return cfg;
@@ -140,6 +162,7 @@ public sealed class ConfigService
                 AllowLanWeb = cfg.AllowLanWeb,
                 Blocked = new List<string>(cfg.Blocked ?? new List<string>()),
                 Muted = new List<string>(cfg.Muted ?? new List<string>()),
+                Groups = new List<GroupInfo>(cfg.Groups ?? new List<GroupInfo>()),
                 UpdateFeed = cfg.UpdateFeed ?? ""
             };
             var tmp = AppPaths.ConfigFile + ".tmp";
